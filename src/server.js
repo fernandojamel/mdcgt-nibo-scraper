@@ -515,6 +515,51 @@ app.post('/sync-pis-cofins', (req, res) => {
   });
 });
 
+/**
+ * POST /sync-inss-irrf
+ *
+ * Recorrência do dashboard de INSS/IRRF (DARF folha, arquivo Excel). Dispara
+ * scripts/sync_inss_irrf.py. Idempotente: 4 linhas (2 lojas × INSS/IRRF) -> no-op.
+ * Cron do n8n nos dias 22-25. Body (opcional): { "competencia": "2026-04", "force": true }
+ */
+app.post('/sync-inss-irrf', (req, res) => {
+  const startedAt = new Date();
+  const body = req.body ?? {};
+  const args = ['scripts/sync_inss_irrf.py'];
+  if (typeof body.competencia === 'string' && /^\d{4}-\d{2}$/.test(body.competencia)) {
+    args.push(body.competencia);
+  }
+  if (body.force === true) args.push('--force');
+
+  logger.info({ args }, 'sync-inss-irrf iniciado');
+
+  const py = spawn('python3', args, { cwd: process.cwd(), env: process.env });
+  let out = '';
+  let err = '';
+  py.stdout.on('data', (d) => {
+    out += d.toString();
+  });
+  py.stderr.on('data', (d) => {
+    err += d.toString();
+  });
+  py.on('error', (e) => {
+    logger.error({ err: e.message }, 'sync-inss-irrf falhou ao iniciar python3');
+    res.status(500).json({ ok: false, error: `spawn python3: ${e.message}` });
+  });
+  py.on('close', (code) => {
+    const durationMs = Date.now() - startedAt.getTime();
+    logger.info({ code, durationMs }, 'sync-inss-irrf finalizado');
+    res.status(code === 0 ? 200 : 500).json({
+      ok: code === 0,
+      ranAt: startedAt.toISOString(),
+      durationMs,
+      exitCode: code,
+      stdout: out.trim().split('\n').slice(-50),
+      stderr: err.trim() ? err.trim().split('\n').slice(-30) : [],
+    });
+  });
+});
+
 app.listen(PORT, () => {
   logger.info({ port: PORT }, 'nibo-scraper escutando');
 });

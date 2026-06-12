@@ -7,11 +7,11 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 
-# Python + pdfplumber pros scripts de parsing/sync (consignado e folha).
-# Roda como root (antes do USER pwuser) pra instalar no sistema.
+# Python pros scripts de parsing/sync. pdfplumber (PDFs) + openpyxl (Excel
+# do rateio INSS/IRRF). Roda como root (antes do USER pwuser).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 python3-pip \
-    && pip3 install --no-cache-dir pdfplumber \
+    && pip3 install --no-cache-dir pdfplumber openpyxl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Código (server Node + scripts Python)
