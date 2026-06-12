@@ -348,6 +348,57 @@ app.post('/sync-consignado', (req, res) => {
   });
 });
 
+/**
+ * POST /sync-impostos
+ *
+ * Recorrência do dashboard de ICMS (impostos). Dispara scripts/sync_impostos.py
+ * DENTRO deste container. O script:
+ *   1. Calcula a competência-alvo (mês anterior) — ou usa a do body.
+ *   2. Se já está completa em `impostos` (>=4 guias) -> no-op.
+ *   3. Senão -> chama /run nas 2 lojas com filtros ICMS+DIFAL, parseia, upsert.
+ *
+ * Pensado pra cron do n8n nos dias 08-11 (1 POST/dia).
+ *
+ * Body (JSON, tudo opcional): { "competencia": "2026-05", "force": true }
+ */
+app.post('/sync-impostos', (req, res) => {
+  const startedAt = new Date();
+  const body = req.body ?? {};
+  const args = ['scripts/sync_impostos.py'];
+  if (typeof body.competencia === 'string' && /^\d{4}-\d{2}$/.test(body.competencia)) {
+    args.push(body.competencia);
+  }
+  if (body.force === true) args.push('--force');
+
+  logger.info({ args }, 'sync-impostos iniciado');
+
+  const py = spawn('python3', args, { cwd: process.cwd(), env: process.env });
+  let out = '';
+  let err = '';
+  py.stdout.on('data', (d) => {
+    out += d.toString();
+  });
+  py.stderr.on('data', (d) => {
+    err += d.toString();
+  });
+  py.on('error', (e) => {
+    logger.error({ err: e.message }, 'sync-impostos falhou ao iniciar python3');
+    res.status(500).json({ ok: false, error: `spawn python3: ${e.message}` });
+  });
+  py.on('close', (code) => {
+    const durationMs = Date.now() - startedAt.getTime();
+    logger.info({ code, durationMs }, 'sync-impostos finalizado');
+    res.status(code === 0 ? 200 : 500).json({
+      ok: code === 0,
+      ranAt: startedAt.toISOString(),
+      durationMs,
+      exitCode: code,
+      stdout: out.trim().split('\n').slice(-50),
+      stderr: err.trim() ? err.trim().split('\n').slice(-30) : [],
+    });
+  });
+});
+
 app.listen(PORT, () => {
   logger.info({ port: PORT }, 'nibo-scraper escutando');
 });
