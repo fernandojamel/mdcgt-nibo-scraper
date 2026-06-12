@@ -78,8 +78,9 @@ def contar_impostos(competencia):
     return len(rows)
 
 
-def chamar_scraper(due_from, due_to, obligation):
-    """POST /run no scraper p/ um obligationName. Retorna items (PDFs base64)."""
+def chamar_scraper(due_from, due_to, obligations):
+    """POST /run no scraper com a LISTA de filtros (1 login, vários filtros).
+    Retorna items (PDFs base64), já deduplicados por fileId pelo scraper."""
     scraper_url = os.environ.get('SCRAPER_URL', 'http://nibo-scraper:3000')
     scraper_token = (os.environ.get('NIBO_SCRAPER_TOKEN')
                      or os.environ.get('SCRAPER_TOKEN'))
@@ -89,7 +90,7 @@ def chamar_scraper(due_from, due_to, obligation):
     payload = {
         'dueDateFrom': due_from,
         'dueDateTo': due_to,
-        'obligationName': obligation,
+        'obligationName': obligations,  # lista -> scraper consulta todos numa sessão
         'skipExisting': False,  # idempotência é por upsert
         'lojas': LOJAS,
     }
@@ -148,20 +149,12 @@ def main():
     print(f'  buscando no Nibo (vencimento {due_from}..{due_to}, '
           f'filtros {OBLIGATION_NAMES})...')
 
-    # Junta os dois filtros, dedup por fileId.
-    vistos = set()
-    items = []
-    for obg in OBLIGATION_NAMES:
-        try:
-            for it in chamar_scraper(due_from, due_to, obg):
-                fid = it.get('fileId')
-                if fid and fid in vistos:
-                    continue
-                if fid:
-                    vistos.add(fid)
-                items.append(it)
-        except Exception as e:
-            print(f'  [WARN] filtro "{obg}" falhou: {e}')
+    # Uma chamada só, com os dois filtros (1 login). Dedup é feito no scraper.
+    try:
+        items = chamar_scraper(due_from, due_to, OBLIGATION_NAMES)
+    except Exception as e:
+        print(f'  [ERRO] scraper falhou: {e}')
+        return
 
     if not items:
         print('  scraper não encontrou os documentos ainda. Tenta de novo amanhã.')

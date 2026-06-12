@@ -110,7 +110,10 @@ app.post('/run', async (req, res) => {
   const startedAt = new Date();
   const body = req.body ?? {};
   const lojas = Array.isArray(body.lojas) ? body.lojas : [];
-  const obligationName = body.obligationName ?? 'FOLHA DE PAGAMENTO - 5';
+  // obligationName pode ser string OU array. Array = consultar vários filtros
+  // (ex: ['ICMS','DIFAL']) numa MESMA sessão de login (menos flakiness).
+  const obligationRaw = body.obligationName ?? 'FOLHA DE PAGAMENTO - 5';
+  const obligations = Array.isArray(obligationRaw) ? obligationRaw : [obligationRaw];
   const dueDateFrom = body.dueDateFrom;
   const dueDateTo = body.dueDateTo;
   // Quando true, consulta a tabela folha_documentos antes de baixar e pula
@@ -156,13 +159,23 @@ app.post('/run', async (req, res) => {
       }
 
       try {
-        const docs = await listarFolhasDoIntervalo(session, {
-          accountantUuid,
-          customerUuid,
-          obligationName,
-          dueDateFrom,
-          dueDateTo,
-        });
+        // Consulta cada filtro na mesma sessão; junta tudo, dedup por fileId.
+        const seenFileIds = new Set();
+        const docs = [];
+        for (const obg of obligations) {
+          const parte = await listarFolhasDoIntervalo(session, {
+            accountantUuid,
+            customerUuid,
+            obligationName: obg,
+            dueDateFrom,
+            dueDateTo,
+          });
+          for (const d of parte) {
+            if (d.fileId && seenFileIds.has(d.fileId)) continue;
+            if (d.fileId) seenFileIds.add(d.fileId);
+            docs.push(d);
+          }
+        }
 
         for (const doc of docs) {
           if (skipExisting && existingFileIds.has(doc.fileId)) {
@@ -254,7 +267,8 @@ app.post('/run', async (req, res) => {
 app.post('/list', async (req, res) => {
   const body = req.body ?? {};
   const lojas = Array.isArray(body.lojas) ? body.lojas : [];
-  const obligationName = body.obligationName ?? 'FOLHA DE PAGAMENTO - 5';
+  const obligationRaw = body.obligationName ?? 'FOLHA DE PAGAMENTO - 5';
+  const obligations = Array.isArray(obligationRaw) ? obligationRaw : [obligationRaw];
   const { dueDateFrom, dueDateTo } = body;
 
   if (lojas.length === 0 || !dueDateFrom || !dueDateTo) {
@@ -273,13 +287,22 @@ app.post('/list', async (req, res) => {
 
     const out = [];
     for (const loja of lojas) {
-      const docs = await listarFolhasDoIntervalo(session, {
-        accountantUuid: loja.accountantUuid,
-        customerUuid: loja.customerUuid,
-        obligationName,
-        dueDateFrom,
-        dueDateTo,
-      });
+      const seenFileIds = new Set();
+      const docs = [];
+      for (const obg of obligations) {
+        const parte = await listarFolhasDoIntervalo(session, {
+          accountantUuid: loja.accountantUuid,
+          customerUuid: loja.customerUuid,
+          obligationName: obg,
+          dueDateFrom,
+          dueDateTo,
+        });
+        for (const d of parte) {
+          if (d.fileId && seenFileIds.has(d.fileId)) continue;
+          if (d.fileId) seenFileIds.add(d.fileId);
+          docs.push(d);
+        }
+      }
       out.push({ loja: loja.nome, count: docs.length, items: docs });
     }
     res.json({ ok: true, lojas: out });
