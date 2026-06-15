@@ -36,7 +36,9 @@ import backfill_consignado as BF
 import backfill_irpj_csll as BIC
 
 IMPOSTO = 'IRPJ_CSLL'
-OBLIGATION_NAMES = ['PIS', 'COFINS', 'PROVIS']  # mesmo relatório do PIS/COFINS
+# Mesmo relatório do PIS/COFINS, mas o fechamento trimestral pode ter nome um
+# pouco diferente — filtros amplos pra garantir que pesca o doc certo.
+OBLIGATION_NAMES = ['PIS', 'COFINS', 'PROVIS', 'APURA', 'IMPOSTOS', 'IRPJ']
 EXPECTED_ROWS = 4  # 2 lojas × (IRPJ + CSLL)
 
 MATRIZ = {
@@ -123,16 +125,15 @@ def main():
             return
         print(f'  {n}/{EXPECTED_ROWS} linhas no banco — buscando.')
 
+    # Janela AMPLA: do mês de fechamento do trimestre até ~4 meses depois — o
+    # doc trimestral pode cair fora do mês seguinte (cotas, datas de apuração).
     comp_y, comp_m = int(competencia[:4]), int(competencia[5:7])
-    if comp_m == 12:
-        venc_y, venc_m = comp_y + 1, 1
-    else:
-        venc_y, venc_m = comp_y, comp_m + 1
-    due_from = date(venc_y, venc_m, 1).isoformat()
-    if venc_m == 12:
-        due_to = date(venc_y + 1, 1, 5).isoformat()
-    else:
-        due_to = date(venc_y, venc_m + 1, 5).isoformat()
+    due_from = date(comp_y, comp_m, 1).isoformat()
+    fim_m, fim_y = comp_m + 4, comp_y
+    while fim_m > 12:
+        fim_m -= 12
+        fim_y += 1
+    due_to = date(fim_y, fim_m, 5).isoformat()
 
     print(f'  buscando no Nibo (vencimento {due_from}..{due_to}, filtros {OBLIGATION_NAMES})...')
     try:
@@ -145,8 +146,9 @@ def main():
         print('  scraper não encontrou o documento ainda. Tenta de novo amanhã.')
         return
 
-    print(f'  {len(items)} documento(s) baixado(s). Parseando e ingerindo...')
-    comp_mm = competencia[:7]
+    nomes = ', '.join(it.get('fileOriginalName', '?') for it in items)
+    print(f'  {len(items)} documento(s) baixado(s): {nomes}')
+    print('  Parseando e ingerindo (parser lê a competência do próprio doc)...')
     for item in items:
         b64 = item.get('pdfBase64')
         if not b64:
@@ -155,7 +157,7 @@ def main():
             tmp.write(base64.b64decode(b64))
             tmp_path = tmp.name
         try:
-            BIC.processar(tmp_path, competencia=comp_mm)
+            BIC.processar(tmp_path)  # competência vem do doc ("mar/26")
         except Exception as e:
             print(f'  [SKIP] {item.get("fileOriginalName")}: {e}')
         finally:
