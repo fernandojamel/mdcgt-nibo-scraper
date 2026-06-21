@@ -18,6 +18,10 @@ Variáveis de ambiente esperadas (mesmas do backfill.js):
 Uso:
   python --env-file=... scripts/backfill_eventos.py            # processa todos
   python scripts/backfill_eventos.py --only-id <doc_uuid>      # 1 documento
+  python scripts/backfill_eventos.py --only-pending            # so docs sem
+                                                                # entradas em
+                                                                # folha_funcionario_mes
+                                                                # (modo cron/sync)
 """
 
 import os
@@ -67,13 +71,23 @@ def supabase_request(method, path, body=None, query=None):
         raise RuntimeError(f'{method} {path} -> {e.code}: {body[:300]}')
 
 
-def listar_documentos():
+def listar_documentos(only_pending=False):
     rows = supabase_request('GET', '/rest/v1/folha_documentos', query={
         'select': 'id,competencia,storage_bucket,storage_path,nibo_document_id,tipo',
         'tipo': 'eq.extrato_mensal',
         'order': 'competencia.desc',
     })
-    return rows
+    if not only_pending:
+        return rows
+    # Filtra docs que NAO tem nenhuma linha em folha_funcionario_mes.
+    # Usa documento_id = eq.X via PostgREST: pra cada doc, faz um count.
+    # Mais eficiente: traz a lista de documento_ids ja processados em 1 query.
+    processados_rows = supabase_request(
+        'GET', '/rest/v1/folha_funcionario_mes',
+        query={'select': 'documento_id'},
+    )
+    processados = {r['documento_id'] for r in processados_rows if r.get('documento_id')}
+    return [d for d in rows if d['id'] not in processados]
 
 
 def baixar_pdf(bucket, path):
@@ -171,15 +185,19 @@ def processar_um(doc):
 
 def main():
     only = None
+    only_pending = False
     for i, arg in enumerate(sys.argv):
         if arg == '--only-id' and i + 1 < len(sys.argv):
             only = sys.argv[i + 1]
+        if arg == '--only-pending':
+            only_pending = True
 
-    docs = listar_documentos()
+    docs = listar_documentos(only_pending=only_pending)
     if only:
         docs = [d for d in docs if d['id'] == only]
     if not docs:
-        print('Nenhum documento encontrado.')
+        msg = 'Nenhum documento pendente.' if only_pending else 'Nenhum documento encontrado.'
+        print(msg)
         return
 
     print(f'{len(docs)} documentos a processar.')

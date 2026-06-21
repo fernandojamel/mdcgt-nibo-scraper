@@ -606,6 +606,102 @@ app.post('/sync-irpj-csll', (req, res) => {
   });
 });
 
+/**
+ * POST /sync-csll-pis-cofins-pj
+ *
+ * Recorrência do dashboard CSLL/PIS/COFINS PJ (retenção PJ a PJ — IRRF +
+ * CSLL/PIS/COFINS unificados numa DARF). Dispara scripts/sync_csll_pis_cofins_pj.py.
+ * Idempotente: 2 linhas (1 por loja) -> no-op. Cron n8n dias 15-20.
+ *
+ * Body (opcional): { "competencia": "2026-05", "force": true }
+ */
+app.post('/sync-csll-pis-cofins-pj', (req, res) => {
+  const startedAt = new Date();
+  const body = req.body ?? {};
+  const args = ['scripts/sync_csll_pis_cofins_pj.py'];
+  if (typeof body.competencia === 'string' && /^\d{4}-\d{2}$/.test(body.competencia)) {
+    args.push(body.competencia);
+  }
+  if (body.force === true) args.push('--force');
+
+  logger.info({ args }, 'sync-csll-pis-cofins-pj iniciado');
+
+  const py = spawn('python3', args, { cwd: process.cwd(), env: process.env });
+  let out = '';
+  let err = '';
+  py.stdout.on('data', (d) => { out += d.toString(); });
+  py.stderr.on('data', (d) => { err += d.toString(); });
+  py.on('error', (e) => {
+    logger.error({ err: e.message }, 'sync-csll-pis-cofins-pj falhou ao iniciar python3');
+    res.status(500).json({ ok: false, error: `spawn python3: ${e.message}` });
+  });
+  py.on('close', (code) => {
+    const durationMs = Date.now() - startedAt.getTime();
+    logger.info({ code, durationMs }, 'sync-csll-pis-cofins-pj finalizado');
+    res.status(code === 0 ? 200 : 500).json({
+      ok: code === 0,
+      ranAt: startedAt.toISOString(),
+      durationMs,
+      exitCode: code,
+      stdout: out.trim().split('\n').slice(-50),
+      stderr: err.trim() ? err.trim().split('\n').slice(-30) : [],
+    });
+  });
+});
+
+/**
+ * POST /sync-folha
+ *
+ * Pos-processamento dos PDFs da folha mensal. Roda backfill_eventos.py com
+ * --only-pending: filtra documentos em folha_documentos que ainda nao tem
+ * entradas em folha_funcionario_mes e processa cada um (parse_folha_pdf +
+ * upsert nas RPCs upsert_folha_funcionario_mes + upsert_folha_resumo_mes).
+ *
+ * Idempotente — re-rodar e seguro (nao reprocessa o que ja esta no banco).
+ *
+ * Body (JSON, todos opcionais):
+ *   { "documento_id": "uuid" }  -> processa SO esse doc (forca, ignora pending)
+ *   sem body                      -> processa todos os pendentes
+ */
+app.post('/sync-folha', (req, res) => {
+  const startedAt = new Date();
+  const body = req.body ?? {};
+  const args = ['scripts/backfill_eventos.py'];
+  if (typeof body.documento_id === 'string' && body.documento_id.length > 0) {
+    args.push('--only-id', body.documento_id);
+  } else {
+    args.push('--only-pending');
+  }
+
+  logger.info({ args }, 'sync-folha iniciado');
+
+  const py = spawn('python3', args, { cwd: process.cwd(), env: process.env });
+  let out = '';
+  let err = '';
+  py.stdout.on('data', (d) => {
+    out += d.toString();
+  });
+  py.stderr.on('data', (d) => {
+    err += d.toString();
+  });
+  py.on('error', (e) => {
+    logger.error({ err: e.message }, 'sync-folha falhou ao iniciar python3');
+    res.status(500).json({ ok: false, error: `spawn python3: ${e.message}` });
+  });
+  py.on('close', (code) => {
+    const durationMs = Date.now() - startedAt.getTime();
+    logger.info({ code, durationMs }, 'sync-folha finalizado');
+    res.status(code === 0 ? 200 : 500).json({
+      ok: code === 0,
+      ranAt: startedAt.toISOString(),
+      durationMs,
+      exitCode: code,
+      stdout: out.trim().split('\n').slice(-50),
+      stderr: err.trim() ? err.trim().split('\n').slice(-30) : [],
+    });
+  });
+});
+
 app.listen(PORT, () => {
   logger.info({ port: PORT }, 'nibo-scraper escutando');
 });
