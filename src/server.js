@@ -1,3 +1,5 @@
+// build-marker: 2026-06-22T20:00 (forca rebuild do EasyPanel — endpoint /sync-folha
+// estava retornando 404 mesmo com codigo presente; container ficou em cache estranho)
 import express from 'express';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
