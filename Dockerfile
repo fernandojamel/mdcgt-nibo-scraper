@@ -15,6 +15,11 @@ RUN apt-get update \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Código (server Node + scripts Python)
+# ARG invalida o cache de COPYs sempre que o valor muda — garantia de que
+# mudancas em src/ ou scripts/ realmente entrem no container, mesmo se o
+# EasyPanel tiver cache estranho do Docker.
+ARG CACHE_BUST=2026-06-22-2030
+RUN echo "build cache key: $CACHE_BUST"
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 
