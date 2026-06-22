@@ -23,9 +23,12 @@ import {
  * pra camada de API usar com axios puro — bem mais rápido que continuar
  * navegando pela UI.
  *
- * 2FA: desabilitado na conta Nibo do scraper (decisao jun/2026). Se a conta
- * voltar a exigir 2FA (Nibo forcar ou usuario reativar), o login cai em
- * /MFA/* e damos erro claro pedindo pra desativar.
+ * 2FA: o Nibo exige 2FA por SMS pra dispositivos "novos". A gente foge disso
+ * usando STORAGE_STATE persistido (cookies do "confiar neste dispositivo").
+ * - Se NIBO_SESSION_B64 esta setado: restaura cookies, vai direto pra app
+ * - Se nao: faz login normal com email+senha (cai em /mfa/SendCode se Nibo
+ *   pedir 2FA — joga erro claro pedindo pra rodar login-manual.js)
+ * Cookie de "trust device" do Nibo dura ~30 dias.
  */
 export async function loginAndCaptureSession({ email, password }) {
   const browser = await chromium.launch({
@@ -36,11 +39,28 @@ export async function loginAndCaptureSession({ email, password }) {
   const navTimeout = Number(process.env.NAV_TIMEOUT_MS ?? 60000);
   const waitTimeout = Number(process.env.WAIT_TIMEOUT_MS ?? 15000);
 
+  // Se temos cookies salvos de um login manual previo, restaura. Isso faz
+  // o Nibo ver o scraper como "dispositivo confiavel" e pular o 2FA SMS.
+  let storageState;
+  if (process.env.NIBO_SESSION_B64) {
+    try {
+      storageState = JSON.parse(
+        Buffer.from(process.env.NIBO_SESSION_B64, 'base64').toString('utf-8')
+      );
+      logger.info({ cookies: storageState.cookies?.length },
+        'NIBO_SESSION_B64 carregado — usando sessao persistida');
+    } catch (err) {
+      logger.warn({ err: err.message },
+        'NIBO_SESSION_B64 invalido — vou fazer login normal');
+    }
+  }
+
   const context = await browser.newContext({
     userAgent: USER_AGENT,
     locale: 'pt-BR',
     timezoneId: 'America/Sao_Paulo',
     viewport: { width: 1280, height: 800 },
+    ...(storageState ? { storageState } : {}),
   });
 
   // Captura passiva do Bearer token: toda requisição saindo do browser pra
@@ -106,14 +126,16 @@ export async function loginAndCaptureSession({ email, password }) {
     ]);
 
     // ------------------------------------------------------------------
-    // 3. Guard: se o Nibo redirecionou pra alguma tela de MFA, alguem reativou
-    //    o 2FA na conta. O scraper foi simplificado em jun/2026 pra rodar sem
-    //    2FA — desative no Nibo (Perfil → Seguranca → Verificacao em 2 etapas).
+    // 3. Guard: se o Nibo redirecionou pra MFA, eh sinal que a sessao
+    //    persistida expirou (cookie "trust device" tem ~30 dias) OU nunca
+    //    foi configurada. Joga erro claro pedindo pra rodar login-manual.js.
     // ------------------------------------------------------------------
     if (page.url().toLowerCase().includes('/mfa/')) {
       throw new Error(
-        `Nibo redirecionou pra MFA (${page.url()}), mas o scraper roda sem 2FA. ` +
-        `Desative o 2FA na conta Nibo do scraper (Perfil > Seguranca > Verificacao em 2 etapas).`
+        `Nibo redirecionou pra MFA (${page.url()}). ` +
+        `Sessao persistida expirou ou nao esta configurada. ` +
+        `Rode 'node --env-file=.env scripts/login-manual.js' localmente, ` +
+        `cole o NIBO_SESSION_B64 no EasyPanel Ambiente, e implante.`
       );
     }
 

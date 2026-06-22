@@ -6,3 +6,6 @@ playwright-report/
 test-results/
 *.har
 *.pdf
+# Sessao persistida do Nibo (cookies do "confiar neste dispositivo")
+nibo-session.json
+qr_nibo.png
