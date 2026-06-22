@@ -129,88 +129,129 @@ export async function loginAndCaptureSession({ email, password, totpSecret }) {
     //    a frequência com que precisamos passar pelo MFA (cookie ~30 dias).
     // ------------------------------------------------------------------
     if (page.url().includes('/MFA/VerifyCode')) {
-      logger.info('gerando código TOTP e submetendo');
       // Espera o JS da página rodar e renderizar as caixinhas (algumas
       // implementações geram o form em runtime).
       await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
 
-      const code = generateTotp(totpSecret);
+      // Retry: TOTP pode ser rejeitado quando geramos no final da janela
+      // de 30s e o Nibo recebe ja no proximo slot (drift de relogio + latencia).
+      // Estrategia: ate 3 tentativas, esperando ~32s entre cada (= novo slot).
+      const MAX_TOTP_TRIES = 3;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= MAX_TOTP_TRIES; attempt++) {
+        // Sincroniza com o inicio do proximo slot TOTP pra ter ~30s inteiros
+        // de validade. Sem isso, codigo gerado no final do slot fica obsoleto
+        // antes do Nibo processar.
+        const msIntoSlot = Date.now() % 30_000;
+        const msToNextSlot = 30_000 - msIntoSlot;
+        // Se faltam menos de 5s no slot atual, espera o proximo (evita gerar
+        // codigo que vai expirar antes do submit chegar)
+        if (msToNextSlot < 5_000) {
+          logger.info({ msToNextSlot }, `aguardando proximo slot TOTP (${msToNextSlot}ms)`);
+          await page.waitForTimeout(msToNextSlot + 500);
+        }
 
-      // Abordagem robusta: foca no primeiro input visível que aceita texto e
-      // digita o código inteiro via teclado. Isso funciona tanto pra um único
-      // input (digita os 6 dígitos no mesmo campo) quanto pra 6 caixinhas
-      // (o JS de cada caixinha auto-avança pra próxima conforme digitamos).
-      const candidatos = [
-        'input:visible[maxlength="1"]',
-        'input:visible[inputmode="numeric"]',
-        'input:visible[autocomplete="one-time-code"]',
-        'input[type="text"]:visible:not([name="Username"])',
-        'input[type="tel"]:visible',
-        'input[name="Code"]:visible',
-        'input[name="code"]:visible',
-      ];
-      let firstInput = null;
-      for (const sel of candidatos) {
-        const loc = page.locator(sel).first();
-        if ((await loc.count()) > 0) {
-          logger.debug({ sel }, 'achei input visível pro TOTP');
-          firstInput = loc;
+        const code = generateTotp(totpSecret);
+        logger.info({ attempt, code, slotMs: Date.now() % 30_000 },
+          `tentativa ${attempt}/${MAX_TOTP_TRIES} de TOTP`);
+
+        // Procura input visivel pra digitar. Robustos: a tela pode ser 1
+        // campo unico ou 6 caixinhas com auto-avanco.
+        const candidatos = [
+          'input:visible[maxlength="1"]',
+          'input:visible[inputmode="numeric"]',
+          'input:visible[autocomplete="one-time-code"]',
+          'input[type="text"]:visible:not([name="Username"])',
+          'input[type="tel"]:visible',
+          'input[name="Code"]:visible',
+          'input[name="code"]:visible',
+        ];
+        let firstInput = null;
+        for (const sel of candidatos) {
+          const loc = page.locator(sel).first();
+          if ((await loc.count()) > 0) {
+            firstInput = loc;
+            break;
+          }
+        }
+
+        if (!firstInput) {
+          await page.screenshot({ path: '/tmp/totp-fail.png', fullPage: true }).catch(() => {});
+          throw new Error('nenhum input visível encontrado na tela de TOTP');
+        }
+
+        // Limpa qualquer valor anterior (retries) selecionando tudo e digitando.
+        await firstInput.click({ delay: 50 });
+        await page.keyboard.press('Control+A').catch(() => {});
+        await page.keyboard.press('Delete').catch(() => {});
+        await page.keyboard.type(code, { delay: 80 });
+        await page.keyboard.press('Tab');
+        await page.waitForTimeout(300);
+
+        if (attempt === 1) {
+          // So marca "confiar neste dispositivo" na 1a tentativa
+          const trustCheckbox = page.locator('input[name="trustThisDevice"][type="checkbox"]');
+          if ((await trustCheckbox.count()) > 0) {
+            await trustCheckbox.check().catch(() => {});
+          }
+        }
+
+        const codeFieldValue = await page.evaluate(() => {
+          const inp = document.querySelector('input[name="Code"], input[name="code"]');
+          return inp ? inp.value : '(nao encontrado)';
+        });
+        logger.debug({ codeFieldValue, expected: code, attempt }, 'valor do campo Code');
+
+        // Submit
+        try {
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30_000 }),
+            page.locator('button[type="submit"], input[type="submit"]').first().click(),
+          ]);
+        } catch (navErr) {
+          await dumpDiagnostico(page, codeFieldValue, `click-no-nav-${attempt}`);
+          lastErr = new Error(`TOTP submit não navegou: ${navErr.message}`);
+          continue;
+        }
+
+        // Se SAIU de /MFA/*, login bem sucedido.
+        if (!page.url().includes('/MFA/') && !page.url().includes('/Account/Login')) {
+          logger.info({ attempt }, 'TOTP aceito');
           break;
         }
-      }
 
-      if (!firstInput) {
-        // Diagnóstico antes de morrer: tira print pra entender a tela.
-        await page.screenshot({ path: '/tmp/totp-fail.png', fullPage: true }).catch(() => {});
-        throw new Error('nenhum input visível encontrado na tela de TOTP — veja /tmp/totp-fail.png');
-      }
-
-      await firstInput.click({ delay: 50 });
-      await page.keyboard.type(code, { delay: 80 });
-      // dispara blur do último input pra garantir que o JS interno (que monta
-      // o campo "Code" hidden a partir das caixinhas) tenha rodado
-      await page.keyboard.press('Tab');
-      await page.waitForTimeout(300);
-
-      // Marca "confiar neste dispositivo" se existir o checkbox
-      const trustCheckbox = page.locator('input[name="trustThisDevice"][type="checkbox"]');
-      if ((await trustCheckbox.count()) > 0) {
-        await trustCheckbox.check().catch(() => {});
-      }
-
-      // Diagnóstico: registra o valor atual de qualquer input "Code" (hidden ou não)
-      // pra confirmar se o JS interno populou corretamente.
-      const codeFieldValue = await page.evaluate(() => {
-        const inp = document.querySelector('input[name="Code"], input[name="code"]');
-        return inp ? inp.value : '(nao encontrado)';
-      });
-      logger.debug({ codeFieldValue, expected: code }, 'valor do campo Code antes do submit');
-
-      // Submit. Espera navegação E depois confere se realmente saímos do MFA.
-      try {
-        await Promise.all([
-          page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30_000 }),
-          page.locator('button[type="submit"], input[type="submit"]').first().click(),
-        ]);
-      } catch (navErr) {
-        // Nem chegou a navegar — provavelmente JS validou o form e bloqueou.
-        await dumpDiagnostico(page, codeFieldValue, 'click-no-nav');
-        throw new Error(`TOTP submit não navegou: ${navErr.message}`);
-      }
-
-      // Se ainda estiver em /MFA/* o código foi rejeitado.
-      if (page.url().includes('/MFA/') || page.url().includes('/Account/Login')) {
-        await dumpDiagnostico(page, codeFieldValue, 'rejected');
+        // Rejeitado. Pega erros visiveis pra log e prepara proxima tentativa.
         const visibleErrors = await page.evaluate(() => {
           const cand = document.querySelectorAll(
             '.alert, .error, .validation-summary-errors, [role="alert"], .text-danger, .help-block, .field-validation-error'
           );
           return [...cand].map((e) => e.textContent.trim()).filter(Boolean);
         });
+        lastErr = new Error(
+          `TOTP rejeitado pelo Nibo (tentativa ${attempt}). URL: ${page.url()}. ` +
+          `Erros: ${visibleErrors.join(' | ') || '(nenhum)'}`
+        );
+        logger.warn({ attempt, url: page.url(), visibleErrors }, 'TOTP rejeitado, vou tentar de novo');
+
+        if (attempt < MAX_TOTP_TRIES) {
+          // Espera ~32s pra cair em NOVO slot TOTP. Se nao esperar, o proximo
+          // generateTotp() vai retornar o MESMO codigo que acabou de ser
+          // rejeitado.
+          logger.info('aguardando 32s pro proximo slot TOTP');
+          await page.waitForTimeout(32_000);
+          // A pagina pode ter mudado entre tentativas (alerta vermelho, etc)
+          // mas a URL ainda eh /MFA/VerifyCode, entao basta tentar de novo.
+        }
+      }
+
+      // Se saiu do loop ainda em /MFA, exauriu tentativas.
+      if (page.url().includes('/MFA/') || page.url().includes('/Account/Login')) {
+        await dumpDiagnostico(page, '(varias tentativas)', 'rejected-final');
         throw new Error(
-          `TOTP rejeitado pelo Nibo. URL após submit: ${page.url()}. ` +
-            `Erros visíveis: ${visibleErrors.join(' | ') || '(nenhum)'}. ` +
-            `Print: c:/Users/ferna/Downloads/totp-fail.png`
+          `TOTP rejeitado pelo Nibo após ${MAX_TOTP_TRIES} tentativas. ` +
+          `URL após submit: ${page.url()}. ` +
+          `Último erro: ${lastErr?.message || '(desconhecido)'}. ` +
+          `Print: c:/Users/ferna/Downloads/totp-fail.png`
         );
       }
     }
