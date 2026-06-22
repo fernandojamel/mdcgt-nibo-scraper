@@ -176,8 +176,15 @@ def _extrair_lojas_com_detalhes(text):
             # Como o nome pode ter espacos, regex pega da direita: ultimos 7
             # tokens sao sempre fixos (data, 2 valores, 2 codigos numericos
             # finais; codFornec e nome ficam no inicio).
+            # NOTE: O pdfplumber ocasionalmente:
+            #  (a) prepende um "0" solitário no inicio de linhas (lixo de
+            #      checkbox/bullet do PDF) -> ignoramos via `(?:0\s+)?`.
+            #  (b) embaralha letras+digitos quando "LTDA" + numero da nota
+            #      vem grudado (ex: "LTDA 5796" -> "LT5D79A6"). Por isso o
+            #      slot do "numero da nota" eh `(\S+?)` (qualquer
+            #      non-whitespace), nao `(\d+)`.
             for ln in re.finditer(
-                r'^\s*(\d+)\s+(.+?)\s+(\d+)\s+'             # codFornec, nome, numNota
+                r'^\s*(?:0\s+)?(\d+)\s+(.+?)\s+(\S+?)\s+'   # codFornec, nome, numNota
                 r'(\d{2}/\d{2}/\d{4})\s+'                   # data
                 r'([\d.,]+)\s+([\d.,]+)\s+'                 # valorNota, valorRet
                 r'(\d+)\s+(\d+)\s*$',                       # codReceita, natRend
