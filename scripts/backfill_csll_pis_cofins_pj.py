@@ -37,28 +37,41 @@ def processar(path):
     if not r['lojas']:
         print(f'  [SKIP] {nome}: nenhuma loja com rateio encontrado')
         return
+    soma = sum(l['total'] for l in r['lojas'].values())
     if not r['reconcilia']:
-        print(f'  [SKIP] {nome}: soma das lojas '
-              f'({sum(r["lojas"].values()):.2f}) NAO bate com total da guia '
-              f'({r["total_guia"]:.2f}) — conferir')
+        print(f'  [SKIP] {nome}: soma das lojas ({soma:.2f}) NAO bate com '
+              f'total da guia ({r["total_guia"]:.2f}) — conferir')
         return
 
-    for empresa, valor in r['lojas'].items():
+    for empresa, info in r['lojas'].items():
+        # `detalhes` = JSONB com lista de notas + metadados da guia.
+        # Mostrado no app no dialog "Detalhes" do dashboard.
+        detalhes = {
+            'numero_documento': r.get('numero_documento'),
+            'total_guia': r.get('total_guia'),
+            'notas': info.get('notas', []),
+        }
         BF.rpc('upsert_imposto', {
             'p_empresa': empresa,
             'p_competencia': r['competencia'],
             'p_imposto': IMPOSTO,
             'p_tipo': TIPO,
-            'p_valor': valor,
+            'p_valor': info['total'],
             'p_cnpj': CNPJ_LOJA.get(empresa),
             'p_razao_social': RAZAO,
+            'p_vencimento': r.get('vencimento'),
+            'p_numero_documento': r.get('numero_documento'),
             'p_natureza_receita': 'Retencao PJ a PJ (IRRF + CSLL/PIS/COFINS)',
+            'p_detalhes': detalhes,
         })
 
-    tij = r['lojas'].get('Tijuca', 0)
-    met = r['lojas'].get('Metropolitano', 0)
+    tij = r['lojas'].get('Tijuca', {}).get('total', 0)
+    met = r['lojas'].get('Metropolitano', {}).get('total', 0)
+    n_tij = len(r['lojas'].get('Tijuca', {}).get('notas', []))
+    n_met = len(r['lojas'].get('Metropolitano', {}).get('notas', []))
     print(f'  [OK] {r["competencia"]} ({nome}): '
-          f'Tij {tij:.2f} | Met {met:.2f} (total {tij + met:.2f})')
+          f'Tij {tij:.2f} ({n_tij} notas) | Met {met:.2f} ({n_met} notas) '
+          f'(total {tij + met:.2f})')
 
 
 def resolver_arquivos(args):

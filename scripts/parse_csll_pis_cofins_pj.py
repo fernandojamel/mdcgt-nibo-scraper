@@ -94,23 +94,12 @@ def parse_pdf(pdf_path):
             except ValueError:
                 pass
 
-    # 5) Rateio por estabelecimento (pagina 2).
-    # Pra cada CNPJ esperado, acha o bloco "Estabelecimento: <cnpj>" e dentro
-    # dele o "Total Geral do Estabelecimento: X,XX". DOTALL pra atravessar
-    # quebras de linha.
-    lojas = {}
-    for cnpj, empresa in CNPJ_TO_EMPRESA.items():
-        pat = (re.escape(f'Estabelecimento: {cnpj}')
-               + r'.*?Total Geral do Estabelecimento:?\s*([\d.,]+)')
-        m = re.search(pat, text, re.DOTALL)
-        if m:
-            try:
-                lojas[empresa] = _money(m.group(1))
-            except ValueError:
-                pass
+    # 5) Rateio por estabelecimento (pagina 2) + DETALHE de cada nota
+    # fiscal que gerou a retencao.
+    lojas = _extrair_lojas_com_detalhes(text)
 
-    # 6) Reconciliacao
-    soma_lojas = sum(lojas.values())
+    # 6) Reconciliacao: soma dos totais das lojas vs total da guia
+    soma_lojas = sum(l['total'] for l in lojas.values())
     reconcilia = (total_guia is None) or abs(soma_lojas - total_guia) < 0.02
 
     return {
@@ -121,6 +110,105 @@ def parse_pdf(pdf_path):
         'lojas': lojas,
         'reconcilia': reconcilia,
     }
+
+
+# Mapeia codigo do imposto (interno do PDF) -> sigla legivel
+_IMPOSTO_LABEL = {
+    '16': 'IRRF',
+    '25': 'CRF',  # CSLL/PIS/COFINS unificados
+}
+
+
+def _extrair_lojas_com_detalhes(text):
+    """Pra cada CNPJ esperado, extrai:
+       - total da loja (Total Geral do Estabelecimento: X,XX)
+       - lista de notas fiscais agrupadas por imposto (16 IRRF, 25 CRF)
+
+    Estrutura retornada:
+      {
+        'Tijuca': {
+          'total': 144.24,
+          'notas': [
+            {'imposto_codigo': '16', 'imposto_label': 'IRRF',
+             'fornecedor_codigo': '56',
+             'fornecedor_nome': 'VVH EMPREENDIMENTOS...',
+             'nota_numero': '5796',
+             'nota_data': '2026-05-01',
+             'valor_nota': 8116.95,
+             'valor_retencao': 121.75,
+             'cod_receita': '804506',
+             'nat_rendimento': '15052'},
+            ...
+          ]
+        },
+        ...
+      }
+    """
+    out = {}
+    for cnpj, empresa in CNPJ_TO_EMPRESA.items():
+        # Bloco do estabelecimento — vai do "Estabelecimento: <cnpj>" ate
+        # "Total Geral do Estabelecimento" (inclusive).
+        bloco_re = (re.escape(f'Estabelecimento: {cnpj}')
+                    + r'(.*?)Total Geral do Estabelecimento:?\s*([\d.,]+)')
+        m = re.search(bloco_re, text, re.DOTALL)
+        if not m:
+            continue
+        bloco = m.group(1)
+        try:
+            total = _money(m.group(2))
+        except ValueError:
+            total = 0.0
+
+        # Quebra o bloco por "Imposto: <codigo> <label>" pra ter sub-blocos
+        # — cada um com 1+ linha de nota.
+        notas = []
+        # Pega segmentos "Imposto: 16 IRRF\n<...>\nTotal Imposto: X,XX"
+        for im in re.finditer(
+            r'Imposto:\s*(\d+)\s+([A-Z]+)\s*(.*?)Total\s+Imposto',
+            bloco,
+            re.DOTALL,
+        ):
+            imp_cod = im.group(1)
+            imp_label = im.group(2)
+            sub = im.group(3)
+            # Cada linha de nota tem formato:
+            # <codFornec> <Nome do Fornecedor (varias palavras)> <numNota> <data DD/MM/YYYY> <valorNota> <valorRetencao> <codReceita> <natRendimento>
+            # Como o nome pode ter espacos, regex pega da direita: ultimos 7
+            # tokens sao sempre fixos (data, 2 valores, 2 codigos numericos
+            # finais; codFornec e nome ficam no inicio).
+            for ln in re.finditer(
+                r'^\s*(\d+)\s+(.+?)\s+(\d+)\s+'             # codFornec, nome, numNota
+                r'(\d{2}/\d{2}/\d{4})\s+'                   # data
+                r'([\d.,]+)\s+([\d.,]+)\s+'                 # valorNota, valorRet
+                r'(\d+)\s+(\d+)\s*$',                       # codReceita, natRend
+                sub,
+                re.MULTILINE,
+            ):
+                try:
+                    d, m_, y = ln.group(4).split('/')
+                    data_iso = f'{y}-{m_}-{d}'
+                except ValueError:
+                    data_iso = ln.group(4)
+                try:
+                    val_nota = _money(ln.group(5))
+                    val_ret = _money(ln.group(6))
+                except ValueError:
+                    continue
+                notas.append({
+                    'imposto_codigo': imp_cod,
+                    'imposto_label': _IMPOSTO_LABEL.get(imp_cod, imp_label),
+                    'fornecedor_codigo': ln.group(1),
+                    'fornecedor_nome': ln.group(2).strip(),
+                    'nota_numero': ln.group(3),
+                    'nota_data': data_iso,
+                    'valor_nota': val_nota,
+                    'valor_retencao': val_ret,
+                    'cod_receita': ln.group(7),
+                    'nat_rendimento': ln.group(8),
+                })
+
+        out[empresa] = {'total': total, 'notas': notas}
+    return out
 
 
 if __name__ == '__main__':
