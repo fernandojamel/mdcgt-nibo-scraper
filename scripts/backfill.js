@@ -9,7 +9,7 @@
  *  3. Imprime resumo no terminal.
  *
  * Pré-requisitos no .env:
- *   - NIBO_EMAIL, NIBO_PASSWORD, NIBO_TOTP_SECRET (mesmas do scraper)
+ *   - NIBO_EMAIL, NIBO_PASSWORD (mesmas do scraper; 2FA desabilitado jun/2026)
  *   - SCRAPER_TOKEN
  *   - SUPABASE_URL
  *   - SUPABASE_SERVICE_ROLE_KEY

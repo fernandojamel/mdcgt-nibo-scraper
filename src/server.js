@@ -148,7 +148,6 @@ app.post('/run', async (req, res) => {
     session = await loginAndCaptureSession({
       email: process.env.NIBO_EMAIL,
       password: process.env.NIBO_PASSWORD,
-      totpSecret: process.env.NIBO_TOTP_SECRET,
     });
 
     for (const loja of lojas) {
@@ -282,7 +281,6 @@ app.post('/list', async (req, res) => {
     session = await loginAndCaptureSession({
       email: process.env.NIBO_EMAIL,
       password: process.env.NIBO_PASSWORD,
-      totpSecret: process.env.NIBO_TOTP_SECRET,
     });
 
     const out = [];
