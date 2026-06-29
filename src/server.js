@@ -2,10 +2,14 @@
 // estava retornando 404 mesmo com codigo presente; container ficou em cache estranho)
 import express from 'express';
 import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { spawn } from 'child_process';
 import { logger } from './util/logger.js';
 import { loginAndCaptureSession, closeSession } from './nibo/auth.js';
 import { listarFolhasDoIntervalo, baixarPdf } from './nibo/api.js';
+import { baixarFolhetins } from './meumania/scraper.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const SCRAPER_TOKEN = process.env.SCRAPER_TOKEN;
@@ -700,6 +704,58 @@ app.post('/sync-folha', (req, res) => {
       stderr: err.trim() ? err.trim().split('\n').slice(-30) : [],
     });
   });
+});
+
+/**
+ * POST /sync-pex
+ *
+ * Recorrência do Folhetim PEX (Meu Mania). Loga no meumania.com via Playwright,
+ * baixa os N folhetins mais recentes (default 4 — o parser precisa de ~3 pra
+ * média móvel do Farol), salva num tmp e dispara scripts/sync_pex_folhetim.py
+ * (parseia + upsert do mês mais recente). Idempotente.
+ * Cron do n8n nos dias 15-25. Body (opcional): { "quantidade": 4 }
+ */
+app.post('/sync-pex', async (req, res) => {
+  const startedAt = new Date();
+  const quantidade = Number(req.body?.quantidade ?? 4);
+  let dir;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pex-'));
+    logger.info({ quantidade, dir }, 'sync-pex iniciado (baixando folhetins)');
+    const items = await baixarFolhetins({ quantidade, destDir: dir });
+
+    const py = spawn('python3', ['scripts/sync_pex_folhetim.py', dir], {
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    let out = '';
+    let err = '';
+    py.stdout.on('data', (d) => { out += d.toString(); });
+    py.stderr.on('data', (d) => { err += d.toString(); });
+    py.on('error', (e) => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      logger.error({ err: e.message }, 'sync-pex: spawn python3 falhou');
+      res.status(500).json({ ok: false, error: `spawn python3: ${e.message}` });
+    });
+    py.on('close', (code) => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      const durationMs = Date.now() - startedAt.getTime();
+      logger.info({ code, durationMs }, 'sync-pex finalizado');
+      res.status(code === 0 ? 200 : 500).json({
+        ok: code === 0,
+        ranAt: startedAt.toISOString(),
+        durationMs,
+        baixados: items.map((i) => ({ lead: i.lead, kb: Math.round(i.sizeBytes / 1024) })),
+        exitCode: code,
+        stdout: out.trim() ? out.trim().split('\n').slice(-40) : [],
+        stderr: err.trim() ? err.trim().split('\n').slice(-20) : [],
+      });
+    });
+  } catch (e) {
+    if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
+    logger.error({ err: e?.message ?? String(e) }, 'sync-pex falhou');
+    res.status(500).json({ ok: false, error: e?.message ?? String(e) });
+  }
 });
 
 app.listen(PORT, () => {
