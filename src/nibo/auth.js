@@ -91,64 +91,68 @@ export async function loginAndCaptureSession({ email, password }) {
     logger.info('navegando pra login');
     await page.goto(APP_BASE, { waitUntil: 'domcontentloaded' });
 
-    // Espera chegar na tela de login do passport (URL contém /Account/Login)
-    await page.waitForURL(/passport\.nibo\.com\.br\/Account\/Login/i, {
-      timeout: navTimeout,
-    });
+    // Depois do goto, pode cair na tela de LOGIN (passport) OU, se a sessão
+    // persistida (NIBO_SESSION_B64) ainda for válida, ir DIRETO pro app. Espera
+    // o que aparecer primeiro — antes ficava travado esperando só o login,
+    // quebrando quando a sessão valia (ia direto pro /Organization).
+    await page.waitForURL(
+      /passport\.nibo\.com\.br\/Account\/Login|empresa\.nibo\.com\.br\/(Organization|Document)/i,
+      { timeout: navTimeout },
+    );
+    const jaNoApp = /empresa\.nibo\.com\.br\/(Organization|Document)/i.test(page.url());
 
-    // ------------------------------------------------------------------
-    // 2. Login Nibo é "identifier-first": primeiro o email, aí aparece senha.
-    //    A página tem um campo Username e um Password — submetemos os dois
-    //    em uma requisição só, igual o SPA faz quando ShowPasswordField=true.
-    // ------------------------------------------------------------------
-    logger.info('preenchendo credenciais');
-    await page.locator('input[name="Username"], input[type="email"]').fill(email);
+    if (jaNoApp) {
+      logger.info({ url: page.url() }, 'sessão válida — já no app (pulando login)');
+    } else {
+      // ------------------------------------------------------------------
+      // 2. Login Nibo é "identifier-first": primeiro o email, aí aparece senha.
+      //    A página tem um campo Username e um Password — submetemos os dois
+      //    em uma requisição só, igual o SPA faz quando ShowPasswordField=true.
+      // ------------------------------------------------------------------
+      logger.info('preenchendo credenciais');
+      await page.locator('input[name="Username"], input[type="email"]').fill(email);
 
-    // Se a senha ainda não está visível (modo identifier-first ativo), clica
-    // no botão "Próximo"/"Continuar" antes de preencher senha.
-    const passwordVisible = await page
-      .locator('input[name="Password"]')
-      .isVisible()
-      .catch(() => false);
+      // Se a senha ainda não está visível (modo identifier-first ativo), clica
+      // no botão "Próximo"/"Continuar" antes de preencher senha.
+      const passwordVisible = await page
+        .locator('input[name="Password"]')
+        .isVisible()
+        .catch(() => false);
 
-    if (!passwordVisible) {
-      logger.debug('senha não visível, clicando próximo');
-      await page.locator('button[type="submit"], input[type="submit"]').first().click();
-      await page.locator('input[name="Password"]').waitFor({ state: 'visible' });
+      if (!passwordVisible) {
+        logger.debug('senha não visível, clicando próximo');
+        await page.locator('button[type="submit"], input[type="submit"]').first().click();
+        await page.locator('input[name="Password"]').waitFor({ state: 'visible' });
+      }
+
+      await page.locator('input[name="Password"]').fill(password);
+
+      // Submete login. Promise.all garante que esperamos a navegação iniciar.
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
+        page.locator('button[type="submit"], input[type="submit"]').first().click(),
+      ]);
+
+      // ------------------------------------------------------------------
+      // 3. Guard: se o Nibo redirecionou pra MFA, eh sinal que a sessao
+      //    persistida expirou (cookie "trust device" tem ~30 dias) OU nunca
+      //    foi configurada. Joga erro claro pedindo pra renovar a sessao.
+      // ------------------------------------------------------------------
+      if (page.url().toLowerCase().includes('/mfa/')) {
+        throw new Error(
+          `Nibo redirecionou pra MFA (${page.url()}). ` +
+          `Sessao persistida (NIBO_SESSION_B64) expirou ou nao esta configurada.`
+        );
+      }
+
+      // ------------------------------------------------------------------
+      // 4. Esperar cair no app (empresa.nibo.com.br/Organization).
+      // ------------------------------------------------------------------
+      await page.waitForURL(/empresa\.nibo\.com\.br\/(Organization|Document)/i, {
+        timeout: navTimeout,
+      });
+      logger.info({ url: page.url() }, 'login completo, na app');
     }
-
-    await page.locator('input[name="Password"]').fill(password);
-
-    // Submete login. Promise.all garante que esperamos a navegação iniciar.
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded' }),
-      page.locator('button[type="submit"], input[type="submit"]').first().click(),
-    ]);
-
-    // ------------------------------------------------------------------
-    // 3. Guard: se o Nibo redirecionou pra MFA, eh sinal que a sessao
-    //    persistida expirou (cookie "trust device" tem ~30 dias) OU nunca
-    //    foi configurada. Joga erro claro pedindo pra rodar login-manual.js.
-    // ------------------------------------------------------------------
-    if (page.url().toLowerCase().includes('/mfa/')) {
-      throw new Error(
-        `Nibo redirecionou pra MFA (${page.url()}). ` +
-        `Sessao persistida expirou ou nao esta configurada. ` +
-        `Rode 'node --env-file=.env scripts/login-manual.js' localmente, ` +
-        `cole o NIBO_SESSION_B64 no EasyPanel Ambiente, e implante.`
-      );
-    }
-
-    // ------------------------------------------------------------------
-    // 4. Esperar cair no app (empresa.nibo.com.br/Organization).
-    //    Se ainda estiver em passport, algo deu errado (código inválido,
-    //    senha errada, etc.) — joga erro com a URL pra debugar.
-    // ------------------------------------------------------------------
-    await page.waitForURL(/empresa\.nibo\.com\.br\/(Organization|Document)/i, {
-      timeout: navTimeout,
-    });
-
-    logger.info({ url: page.url() }, 'login completo, na app');
 
     // ------------------------------------------------------------------
     // 5. Esperar o SPA do Nibo carregar e fazer suas chamadas API iniciais.
