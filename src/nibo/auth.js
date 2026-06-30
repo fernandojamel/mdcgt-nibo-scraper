@@ -194,9 +194,23 @@ export async function loginAndCaptureSession({ email, password }) {
       capturedAt: Date.now(),
     };
   } catch (err) {
-    logger.error({ err: err?.message ?? String(err), url: page.url() }, 'falha no login');
+    // Diagnóstico: em que página o login parou? (captcha? "verifique sua
+    // identidade"? bloqueio de IP?) — ajuda a entender por que a VPS falha
+    // mas o PC residencial loga.
+    let diag = '';
+    try {
+      const url = page.url();
+      const titulo = await page.title().catch(() => '');
+      const corpo = await page.locator('body').innerText().catch(() => '');
+      diag =
+        ` | URL=${url} | TITULO="${titulo}" | PAGINA="${corpo.replace(/\s+/g, ' ').slice(0, 400)}"`;
+    } catch {}
+    logger.error(
+      { err: err?.message ?? String(err), url: page.url() },
+      'falha no login',
+    );
     await browser.close().catch(() => {});
-    throw err;
+    throw new Error((err?.message ?? String(err)) + diag);
   }
 }
 
