@@ -51,6 +51,18 @@ def comp_do_texto(full, override):
 
 
 def parse_irpj_csll(path, competencia=None):
+    """Parseia o PDF 'APURAÇÃO IMPOSTOS FEDERAIS MANIA TIJUCA'.
+
+    Layout (jun/2026+): 3 tabelas empilhadas cada uma iniciada por "LOJA
+    FATURAMENTO ...":
+      1. IRPJ (colunas ... IRPJ A RECOLHER) — trimestral
+      2. CSLL (colunas ... CSLL A RECOLHER) — trimestral
+      3. PIS/COFINS (mensal, ignorado aqui — cuidado pelo parse_pis_cofins)
+
+    Estrategia: split por "LOJA FATURAMENTO"; pra cada tabela identifica pelo
+    header ("IRPJ A RECOLHER" ou "CSLL A RECOLHER") e extrai o ÚLTIMO valor
+    R$ de cada linha TIJUCA/METROPOLITANO (que sempre eh o "A RECOLHER").
+    """
     full = ''
     with pdfplumber.open(path) as pdf:
         for pg in pdf.pages:
@@ -60,37 +72,54 @@ def parse_irpj_csll(path, competencia=None):
 
     por_loja = {'Tijuca': {'IRPJ': 0.0, 'CSLL': 0.0},
                 'Metropolitano': {'IRPJ': 0.0, 'CSLL': 0.0}}
-    total_linha = None
-    for line in full.split('\n'):
-        mloja = re.match(r'^(TIJUCA|METROPOLITANO|TAQUARA)\b(.*)', line)
-        mtot = re.match(r'^TOTAL\b(.*)', line)
-        alvo = mloja or mtot
-        if not alvo:
-            continue
-        resto = alvo.group(2) if mloja else mtot.group(1)
-        valores = [clean_num(v) for v in resto.split('R$') if v.strip()]
-        # A tabela de apuração (IRPJ/CSLL) tem muitas colunas; a do PIS/COFINS
-        # tem 3. Só nos interessa a de apuração (>= 7 valores).
-        if len(valores) < 7:
-            continue
-        irpj, csll = valores[-2], valores[-1]
-        if mtot:
-            total_linha = (irpj, csll)
+    total_por_tipo = {'IRPJ': None, 'CSLL': None}
+
+    # Split por "LOJA FATURAMENTO" — cada segmento eh uma tabela.
+    partes = re.split(r'LOJA\s+FATURAMENTO', full)
+    for parte in partes[1:]:  # partes[0] eh o cabecalho antes da 1a tabela
+        linhas = parte.split('\n')
+        header = linhas[0].upper() if linhas else ''
+        if 'IRPJ A RECOLHER' in header:
+            tipo = 'IRPJ'
+        elif 'CSLL A RECOLHER' in header:
+            tipo = 'CSLL'
         else:
-            por_loja[LOJA[mloja.group(1)]]['IRPJ'] += irpj
-            por_loja[LOJA[mloja.group(1)]]['CSLL'] += csll
+            continue  # tabela de PIS/COFINS ou outra — ignora
+
+        for linha in linhas[1:]:
+            mloja = re.match(r'^(TIJUCA|METROPOLITANO|TAQUARA)\s+(.*)', linha)
+            mtot = re.match(r'^TOTAL\s+(.*)', linha)
+            alvo = mloja or mtot
+            if not alvo:
+                continue
+            resto = mloja.group(2) if mloja else mtot.group(1)
+            # Pega TODOS os "R$ N,NN" da linha (com espaco tolerado nos
+            # numeros porque pdfplumber as vezes quebra "1 03,28").
+            valores = re.findall(r'R\$\s*([\d\s.]+,\d{2})', resto)
+            if not valores:
+                continue
+            recolher = clean_num(valores[-1])
+            if mtot:
+                total_por_tipo[tipo] = recolher
+            else:
+                por_loja[LOJA[mloja.group(1)]][tipo] += recolher
 
     soma_irpj = sum(v['IRPJ'] for v in por_loja.values())
     soma_csll = sum(v['CSLL'] for v in por_loja.values())
-    reconcilia = (total_linha is not None
-                  and abs(soma_irpj - total_linha[0]) < 0.02
-                  and abs(soma_csll - total_linha[1]) < 0.02)
+    reconcilia = (
+        total_por_tipo['IRPJ'] is not None
+        and total_por_tipo['CSLL'] is not None
+        and abs(soma_irpj - total_por_tipo['IRPJ']) < 0.02
+        and abs(soma_csll - total_por_tipo['CSLL']) < 0.02
+    )
 
     return {
         'competencia': comp,
         'imposto': 'IRPJ_CSLL',
-        'total': {'IRPJ': round(total_linha[0], 2) if total_linha else None,
-                  'CSLL': round(total_linha[1], 2) if total_linha else None},
+        'total': {
+            'IRPJ': round(total_por_tipo['IRPJ'], 2) if total_por_tipo['IRPJ'] else None,
+            'CSLL': round(total_por_tipo['CSLL'], 2) if total_por_tipo['CSLL'] else None,
+        },
         'lojas': {k: {'IRPJ': round(v['IRPJ'], 2), 'CSLL': round(v['CSLL'], 2)}
                   for k, v in por_loja.items()},
         'reconcilia': reconcilia,
