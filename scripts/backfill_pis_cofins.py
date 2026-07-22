@@ -25,9 +25,11 @@ CNPJ_LOJA = {
 }
 
 
-def processar(pdf_path):
+def processar(pdf_path, competencia_hint=None):
+    """Se o parser nao conseguir extrair competencia do PDF, usa `competencia_hint`
+    (ex: passado pelo sync_pis_cofins com base na competencia-alvo do run)."""
     nome = os.path.basename(pdf_path)
-    r = P.parse_pis_cofins(pdf_path)
+    r = P.parse_pis_cofins(pdf_path, competencia_hint=competencia_hint)
     if not r['competencia'] or not r['lojas']:
         print(f'  [SKIP] {nome}: dados incompletos -> {r}')
         return

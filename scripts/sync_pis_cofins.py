@@ -147,7 +147,10 @@ def main():
             tmp.write(base64.b64decode(pdf_b64))
             tmp_path = tmp.name
         try:
-            BPC.processar(tmp_path)  # PIS/COFINS -> upsert; outros -> [SKIP]
+            # Passa a competencia-alvo como hint pro parser — se o layout do
+            # PDF nao tiver "MÊS: MM/YYYY" (mudou em jun/2026), o parser usa
+            # a hint como fallback pra nao dar [SKIP] por competencia None.
+            BPC.processar(tmp_path, competencia_hint=competencia)
         finally:
             os.unlink(tmp_path)
 
