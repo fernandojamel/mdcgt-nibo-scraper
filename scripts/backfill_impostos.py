@@ -23,11 +23,15 @@ PASTA_PADRAO = r'C:/Users/ferna/Downloads/icms'
 
 
 def processar(pdf_path):
+    """Retorna o dict parseado `r` em caso de sucesso (upsert feito), ou
+    None se pulou por dados incompletos. O retorno é usado pelo
+    sync_impostos.py pra saber quais lojas/competencias foram atualizadas
+    nesta rodada (e assim decidir se dispara o relatorio por e-mail)."""
     nome = os.path.basename(pdf_path)
     r = P.parse_darj(pdf_path)
     if not r['empresa'] or not r['competencia'] or r['valor'] is None:
         print(f'  [SKIP] {nome}: dados incompletos -> {r}')
-        return
+        return None
     BF.rpc('upsert_imposto', {
         'p_empresa': r['empresa'],
         'p_competencia': r['competencia'],
@@ -42,6 +46,7 @@ def processar(pdf_path):
     })
     print(f'  [OK] {r["empresa"]:13} {r["imposto"]}/{r["tipo"]:8} '
           f'{r["competencia"]} venc {r["vencimento"]} R$ {r["valor"]}')
+    return r
 
 
 def resolver_arquivos(args):

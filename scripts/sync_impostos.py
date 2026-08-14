@@ -14,7 +14,8 @@ Fluxo (idempotente):
      .processar — resolve loja pelo CNPJ e tipo pela natureza). PDFs escaneados
      (imagem) são pulados com aviso (precisam de entrada manual).
 
-Pensado pra cron DIÁRIO nos dias 08-11. Nos dias sem o doc, o scraper volta
+Pensado pra cron DIÁRIO nos dias 05-11 (folga antes do 08 de costume, caso
+o Nibo poste mais cedo). Nos dias sem o doc, o scraper volta
 vazio = no-op. Quando aparece, ingere. Depois de completo, o passo 2 pula.
 
 Variáveis de ambiente (lidas de nibo-scraper/.env se existir):
@@ -161,6 +162,7 @@ def main():
         return
 
     print(f'  {len(items)} documento(s) baixado(s). Parseando e ingerindo...')
+    novos = []  # guias efetivamente upsertadas nesta rodada (pra decidir o e-mail)
     for item in items:
         pdf_b64 = item.get('pdfBase64')
         if not pdf_b64:
@@ -169,9 +171,20 @@ def main():
             tmp.write(base64.b64decode(pdf_b64))
             tmp_path = tmp.name
         try:
-            BI.processar(tmp_path)  # parseia + upsert (loja por CNPJ, tipo por natureza)
+            r = BI.processar(tmp_path)  # parseia + upsert (loja por CNPJ, tipo por natureza)
+            if r:
+                novos.append(r)
         finally:
             os.unlink(tmp_path)
+
+    # Linha marcada (RESULT_JSON:) pro n8n saber quais lojas ganharam guia
+    # nova nesta rodada e disparar o relatorio por e-mail so pra elas.
+    if novos:
+        lojas_atualizadas = sorted(set(n['empresa'] for n in novos))
+        print('RESULT_JSON:' + json.dumps({
+            'lojas_atualizadas': lojas_atualizadas,
+            'competencia': competencia,
+        }))
 
 
 if __name__ == '__main__':

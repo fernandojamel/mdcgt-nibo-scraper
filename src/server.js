@@ -760,7 +760,7 @@ app.post('/sync-pex', async (req, res) => {
 
 // Marcador de build: aparece nos logs no boot pra confirmar QUAL versão do
 // código está rodando no container (o EasyPanel às vezes serve imagem cacheada).
-const BUILD = '2026-06-30-build-marker';
+const BUILD = '2026-08-14-icms-report-fix';
 app.listen(PORT, () => {
   logger.info({ port: PORT, build: BUILD }, 'nibo-scraper escutando');
 });
