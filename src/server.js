@@ -1,5 +1,3 @@
-// build-marker: 2026-06-22T20:00 (forca rebuild do EasyPanel — endpoint /sync-folha
-// estava retornando 404 mesmo com codigo presente; container ficou em cache estranho)
 import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -15,6 +13,11 @@ const PORT = Number(process.env.PORT ?? 3000);
 const SCRAPER_TOKEN = process.env.SCRAPER_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// Marcador de build: aparece nos logs no boot E no /health, pra confirmar QUAL
+// versão do código está rodando no container (o EasyPanel às vezes serve
+// imagem cacheada mesmo após um push+deploy).
+const BUILD = '2026-08-14-icms-report-fix';
 
 if (!SCRAPER_TOKEN) {
   logger.error('SCRAPER_TOKEN ausente — defina no .env antes de subir');
@@ -55,8 +58,10 @@ const app = express();
 // Limite alto porque a resposta pode incluir vários PDFs em base64
 app.use(express.json({ limit: '128mb' }));
 
-// Healthcheck (não exige auth — usado pelo Docker healthcheck)
-app.get('/health', (_, res) => res.json({ ok: true, ts: Date.now() }));
+// Healthcheck (não exige auth — usado pelo Docker healthcheck). Inclui o
+// BUILD pra dar pra confirmar de fora (via n8n, por ex.) qual versão do
+// código está rodando, sem precisar abrir os logs do EasyPanel.
+app.get('/health', (_, res) => res.json({ ok: true, ts: Date.now(), build: BUILD }));
 
 // Middleware: auth de quem chama o scraper (apenas o n8n deve conseguir)
 app.use((req, res, next) => {
@@ -758,9 +763,6 @@ app.post('/sync-pex', async (req, res) => {
   }
 });
 
-// Marcador de build: aparece nos logs no boot pra confirmar QUAL versão do
-// código está rodando no container (o EasyPanel às vezes serve imagem cacheada).
-const BUILD = '2026-08-14-icms-report-fix';
 app.listen(PORT, () => {
   logger.info({ port: PORT, build: BUILD }, 'nibo-scraper escutando');
 });
