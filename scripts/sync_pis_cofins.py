@@ -139,6 +139,7 @@ def main():
         return
 
     print(f'  {len(items)} documento(s) baixado(s). Parseando e ingerindo...')
+    novos = []  # resultados com sucesso nesta rodada (pra decidir o e-mail)
     for item in items:
         pdf_b64 = item.get('pdfBase64')
         if not pdf_b64:
@@ -150,9 +151,21 @@ def main():
             # Passa a competencia-alvo como hint pro parser — se o layout do
             # PDF nao tiver "MÊS: MM/YYYY" (mudou em jun/2026), o parser usa
             # a hint como fallback pra nao dar [SKIP] por competencia None.
-            BPC.processar(tmp_path, competencia_hint=competencia)
+            r = BPC.processar(tmp_path, competencia_hint=competencia)
+            if r:
+                novos.append(r)
         finally:
             os.unlink(tmp_path)
+
+    # Linha marcada (RESULT_JSON:) pro n8n saber que teve ingestao nova e
+    # disparar o relatorio por e-mail. O demonstrativo sempre traz as DUAS
+    # lojas juntas (nao eh 1 PDF por loja como no ICMS), entao se deu certo
+    # as duas foram atualizadas.
+    if novos:
+        print('RESULT_JSON:' + json.dumps({
+            'lojas_atualizadas': ['Tijuca', 'Metropolitano'],
+            'competencia': competencia,
+        }))
 
 
 if __name__ == '__main__':

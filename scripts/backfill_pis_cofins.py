@@ -12,10 +12,12 @@ Uso:
 import os
 import sys
 import glob
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import backfill_consignado as BF  # rpc
 import parse_pis_cofins as P
+from feriados_brasil import vencimento_federal
 
 PASTA_PADRAO = r'C:/Users/ferna/Downloads/pis_cofins'
 RAZAO = 'RESTAURANTE TIJUCA COMERCIO DE ALIMENTOS LTDA'
@@ -23,16 +25,27 @@ CNPJ_LOJA = {
     'Tijuca': '41.062.171/0001-22',
     'Metropolitano': '41.062.171/0002-03',
 }
+# PIS/COFINS vence sempre dia 25 do mes seguinte a competencia, antecipado
+# pro dia util anterior se cair em fim de semana/feriado (Lei 11.933/2009).
+# O "Demonstrativo de Apuracao" nao imprime essa data -- calculamos.
+DIA_VENCIMENTO = 25
 
 
 def processar(pdf_path, competencia_hint=None):
     """Se o parser nao conseguir extrair competencia do PDF, usa `competencia_hint`
-    (ex: passado pelo sync_pis_cofins com base na competencia-alvo do run)."""
+    (ex: passado pelo sync_pis_cofins com base na competencia-alvo do run).
+    Retorna o dict parseado (com 'vencimento' calculado) em caso de sucesso,
+    ou None se pulou por dados incompletos -- usado pelo sync_pis_cofins.py
+    pra saber se disparou o relatorio por e-mail."""
     nome = os.path.basename(pdf_path)
     r = P.parse_pis_cofins(pdf_path, competencia_hint=competencia_hint)
     if not r['competencia'] or not r['lojas']:
         print(f'  [SKIP] {nome}: dados incompletos -> {r}')
-        return
+        return None
+
+    comp_date = date.fromisoformat(r['competencia'])
+    vencimento = vencimento_federal(comp_date, DIA_VENCIMENTO).isoformat()
+
     for empresa, vals in r['lojas'].items():
         for tipo in ('PIS', 'COFINS'):
             valor = vals['pis'] if tipo == 'PIS' else vals['cofins']
@@ -44,12 +57,15 @@ def processar(pdf_path, competencia_hint=None):
                 'p_valor': valor,
                 'p_cnpj': CNPJ_LOJA.get(empresa),
                 'p_razao_social': RAZAO,
+                'p_vencimento': vencimento,
                 'p_natureza_receita': f'{tipo} (provisão federal)',
             })
     tij = r['lojas'].get('Tijuca', {})
     met = r['lojas'].get('Metropolitano', {})
-    print(f'  [OK] {r["competencia"]} | Tij PIS {tij.get("pis", 0):.2f} COF {tij.get("cofins", 0):.2f} | '
+    print(f'  [OK] {r["competencia"]} venc {vencimento} | Tij PIS {tij.get("pis", 0):.2f} COF {tij.get("cofins", 0):.2f} | '
           f'Met PIS {met.get("pis", 0):.2f} COF {met.get("cofins", 0):.2f}')
+    r['vencimento'] = vencimento
+    return r
 
 
 def resolver_arquivos(args):
