@@ -12,7 +12,8 @@ Fluxo (idempotente):
   4. Pra cada arquivo: parseia (parse_inss_irrf) com a competência-alvo e faz
      upsert. Arquivos que não são o rateio (sem "TOTAL DARF") são pulados.
 
-Cron DIÁRIO dias 22-25.
+Cron DIÁRIO dias 15-20 (janela adiantada — vencimento é dia 20, então o
+rateio precisa estar disponível antes disso).
 
 Uso:
   python scripts/sync_inss_irrf.py            # competência automática
@@ -139,6 +140,7 @@ def main():
     print(f'  {len(items)} documento(s) baixado(s). Parseando e ingerindo...')
     # competência (AAAA-MM) pra passar ao parser (arquivo vem com nome temporário).
     comp_mm = competencia[:7]
+    novos = []
     for item in items:
         b64 = item.get('pdfBase64')  # campo genérico (qualquer arquivo)
         if not b64:
@@ -147,11 +149,21 @@ def main():
             tmp.write(base64.b64decode(b64))
             tmp_path = tmp.name
         try:
-            BII.processar(tmp_path, competencia=comp_mm)
+            r = BII.processar(tmp_path, competencia=comp_mm)
+            if r:
+                novos.append(r)
         except Exception as e:
             print(f'  [SKIP] {item.get("fileOriginalName")}: não é o rateio ({e})')
         finally:
             os.unlink(tmp_path)
+
+    # Linha marcada (RESULT_JSON:) pro n8n disparar o relatorio por e-mail.
+    # O rateio sempre traz as DUAS lojas juntas (1 Excel so).
+    if novos:
+        print('RESULT_JSON:' + json.dumps({
+            'lojas_atualizadas': ['Tijuca', 'Metropolitano'],
+            'competencia': competencia,
+        }))
 
 
 if __name__ == '__main__':

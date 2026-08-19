@@ -17,7 +17,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // Marcador de build: aparece nos logs no boot E no /health, pra confirmar QUAL
 // versão do código está rodando no container (o EasyPanel às vezes serve
 // imagem cacheada mesmo após um push+deploy).
-const BUILD = '2026-08-18-pis-cofins-vencimento';
+const BUILD = '2026-08-18-inss-irrf-vencimento';
 
 if (!SCRAPER_TOKEN) {
   logger.error('SCRAPER_TOKEN ausente — defina no .env antes de subir');
