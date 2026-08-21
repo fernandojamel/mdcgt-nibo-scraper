@@ -71,10 +71,15 @@ export async function baixarFolhetins({ quantidade = 4, destDir }) {
     const docs = JSON.parse(data?.DOCUMENTS || '[]');
     logger.info({ total: docs.length }, 'meumania: documentos listados');
 
-    // 3) filtra folhetins (categoria) .pdf, ordena por data desc
+    // 3) filtra folhetins .pdf, ordena por data desc. NÃO depender só da
+    // categoria (VIDEO_CATEGORY_NAME) -- o folhetim de julho/2026 foi
+    // publicado com categoria NULL (inconsistência do próprio Meu Mania),
+    // o que fazia o filtro anterior (só por categoria) perder o documento
+    // silenciosamente. O lead ("Folhetim de Resultados | <Mês> <Ano>") é
+    // mais confiável.
     const folhetins = docs
       .filter((d) =>
-        (d.VIDEO_CATEGORY_NAME || '').includes('Folhetim') &&
+        /^Folhetim de Resultados/i.test(d.SOCIAL_LEAD || '') &&
         (d.SOCIAL_FILE_TYPE || '').toLowerCase() === '.pdf' &&
         d.SOCIAL_FILE_NAME)
       .sort((a, b) => String(b.SOCIAL_POST_DT).localeCompare(String(a.SOCIAL_POST_DT)));
