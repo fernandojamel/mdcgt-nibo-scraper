@@ -69,7 +69,25 @@ export async function buscarAvaliacoes({ dateFrom, dateTo }) {
     await page.waitForTimeout(3000);
     const aindaLogin = await passInput.isVisible().catch(() => false);
     if (aindaLogin) {
-      throw new Error('login falhou (senha ainda visível) — confira HARMO_USER/PASS');
+      // Diagnóstico: screenshot + texto da página no momento da falha (pode
+      // ser bloqueio anti-robô específico do IP do servidor, captcha, ou
+      // mensagem de erro visível que não aparece testando local).
+      let screenshotBase64;
+      let pageText;
+      let pageUrl;
+      try {
+        const buf = await page.screenshot({ timeout: 8000 });
+        screenshotBase64 = buf.toString('base64');
+      } catch (e) {
+        logger.warn({ err: e.message }, 'harmo: screenshot de diagnostico falhou');
+      }
+      try {
+        pageText = (await page.locator('body').innerText({ timeout: 5000 })).slice(0, 1000);
+      } catch { /* ignore */ }
+      pageUrl = page.url();
+      const err = new Error('login falhou (senha ainda visível) — confira HARMO_USER/PASS');
+      err.diagnostico = { screenshotBase64, pageText, pageUrl };
+      throw err;
     }
     logger.info('harmo: login OK');
 

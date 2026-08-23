@@ -18,7 +18,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // Marcador de build: aparece nos logs no boot E no /health, pra confirmar QUAL
 // versão do código está rodando no container (o EasyPanel às vezes serve
 // imagem cacheada mesmo após um push+deploy).
-const BUILD = '2026-08-23-harmo-api-scraper';
+const BUILD = '2026-08-23-harmo-diagnostico-login';
 
 if (!SCRAPER_TOKEN) {
   logger.error('SCRAPER_TOKEN ausente — defina no .env antes de subir');
@@ -814,7 +814,11 @@ app.post('/sync-harmo', async (req, res) => {
     });
   } catch (e) {
     logger.error({ err: e?.message ?? String(e) }, 'sync-harmo falhou');
-    res.status(500).json({ ok: false, error: e?.message ?? String(e) });
+    res.status(500).json({
+      ok: false,
+      error: e?.message ?? String(e),
+      diagnostico: e?.diagnostico,
+    });
   }
 });
 
