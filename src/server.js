@@ -8,6 +8,7 @@ import { logger } from './util/logger.js';
 import { loginAndCaptureSession, closeSession } from './nibo/auth.js';
 import { listarFolhasDoIntervalo, baixarPdf } from './nibo/api.js';
 import { baixarFolhetins } from './meumania/scraper.js';
+import { buscarAvaliacoes } from './harmo/scraper.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const SCRAPER_TOKEN = process.env.SCRAPER_TOKEN;
@@ -17,7 +18,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // Marcador de build: aparece nos logs no boot E no /health, pra confirmar QUAL
 // versão do código está rodando no container (o EasyPanel às vezes serve
 // imagem cacheada mesmo após um push+deploy).
-const BUILD = '2026-08-21-pex-folhetim-filtro';
+const BUILD = '2026-08-23-harmo-api-scraper';
 
 if (!SCRAPER_TOKEN) {
   logger.error('SCRAPER_TOKEN ausente — defina no .env antes de subir');
@@ -759,6 +760,60 @@ app.post('/sync-pex', async (req, res) => {
   } catch (e) {
     if (dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
     logger.error({ err: e?.message ?? String(e) }, 'sync-pex falhou');
+    res.status(500).json({ ok: false, error: e?.message ?? String(e) });
+  }
+});
+
+app.post('/sync-harmo', async (req, res) => {
+  const startedAt = new Date();
+  // Janela rolante de 60 dias por padrão -- cobre a competencia do PEX em
+  // aberto (ciclo 25->24) e reimporta o mes anterior tambem, pra pegar
+  // respostas que chegaram depois da 1a sincronizacao (ver migration 0057:
+  // e idempotente, "substitui o periodo" por loja+canal).
+  const diasJanela = Number(req.body?.dias ?? 60);
+  const dateTo = req.body?.dateTo ? new Date(req.body.dateTo) : new Date();
+  const dateFrom = req.body?.dateFrom
+    ? new Date(req.body.dateFrom)
+    : new Date(dateTo.getTime() - diasJanela * 24 * 60 * 60 * 1000);
+
+  let tmpFile;
+  try {
+    logger.info({ dateFrom, dateTo }, 'sync-harmo iniciado (baixando avaliacoes)');
+    const reviews = await buscarAvaliacoes({ dateFrom, dateTo });
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'harmo-'));
+    tmpFile = path.join(dir, 'reviews.json');
+    fs.writeFileSync(tmpFile, JSON.stringify(reviews));
+
+    const py = spawn('python3', ['scripts/sync_harmo_avaliacoes.py', tmpFile], {
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    let out = '';
+    let err = '';
+    py.stdout.on('data', (d) => { out += d.toString(); });
+    py.stderr.on('data', (d) => { err += d.toString(); });
+    py.on('error', (e) => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      logger.error({ err: e.message }, 'sync-harmo: spawn python3 falhou');
+      res.status(500).json({ ok: false, error: `spawn python3: ${e.message}` });
+    });
+    py.on('close', (code) => {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      const durationMs = Date.now() - startedAt.getTime();
+      logger.info({ code, durationMs }, 'sync-harmo finalizado');
+      res.status(code === 0 ? 200 : 500).json({
+        ok: code === 0,
+        ranAt: startedAt.toISOString(),
+        durationMs,
+        baixadas: reviews.length,
+        exitCode: code,
+        stdout: out.trim() ? out.trim().split('\n').slice(-40) : [],
+        stderr: err.trim() ? err.trim().split('\n').slice(-20) : [],
+      });
+    });
+  } catch (e) {
+    logger.error({ err: e?.message ?? String(e) }, 'sync-harmo falhou');
     res.status(500).json({ ok: false, error: e?.message ?? String(e) });
   }
 });
