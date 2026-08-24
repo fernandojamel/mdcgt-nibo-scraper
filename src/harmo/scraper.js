@@ -59,6 +59,20 @@ export async function buscarAvaliacoes({ dateFrom, dateTo }) {
       .catch((e) => logger.warn({ err: e.message }, 'harmo: goto warn'));
     await page.waitForTimeout(1500);
 
+    // Diagnóstico: captura a resposta REAL da chamada de login (a tela só
+    // mostra "Erro inesperado" genérico) -- guarda status+corpo de qualquer
+    // POST que pareça ser de autenticação (auth0, login, token).
+    const loginCalls = [];
+    page.on('response', async (resp) => {
+      const req2 = resp.request();
+      if (req2.method() !== 'POST') return;
+      if (!/auth0|login|token|oauth/i.test(resp.url())) return;
+      try {
+        const bodyText = await resp.text();
+        loginCalls.push({ url: resp.url(), status: resp.status(), body: bodyText.slice(0, 1000) });
+      } catch { /* ignore */ }
+    });
+
     const emailInput = page.locator('input[type="email"], input[placeholder*="mail" i]').first();
     const passInput = page.locator('input[type="password"]').first();
     await emailInput.waitFor({ state: 'visible', timeout: 30000 });
@@ -86,7 +100,7 @@ export async function buscarAvaliacoes({ dateFrom, dateTo }) {
       } catch { /* ignore */ }
       pageUrl = page.url();
       const err = new Error('login falhou (senha ainda visível) — confira HARMO_USER/PASS');
-      err.diagnostico = { screenshotBase64, pageText, pageUrl };
+      err.diagnostico = { screenshotBase64, pageText, pageUrl, loginCalls };
       throw err;
     }
     logger.info('harmo: login OK');
