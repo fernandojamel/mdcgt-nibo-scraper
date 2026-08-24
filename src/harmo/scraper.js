@@ -65,12 +65,12 @@ export async function buscarAvaliacoes({ dateFrom, dateTo }) {
     const loginCalls = [];
     page.on('response', async (resp) => {
       const req2 = resp.request();
-      if (req2.method() !== 'POST') return;
-      if (!/auth0|login|token|oauth/i.test(resp.url())) return;
-      try {
-        const bodyText = await resp.text();
-        loginCalls.push({ url: resp.url(), status: resp.status(), body: bodyText.slice(0, 1000) });
-      } catch { /* ignore */ }
+      if (req2.method() !== 'POST' && req2.method() !== 'GET') return;
+      if (/\.(png|jpg|svg|css|woff|gif|ico)(\?|$)/i.test(resp.url())) return;
+      if (/google|hubspot|mixpanel|doubleclick|linkedin|hs-script/i.test(resp.url())) return;
+      let bodyText = '';
+      try { bodyText = (await resp.text()).slice(0, 800); } catch { /* ignore */ }
+      loginCalls.push({ method: req2.method(), url: resp.url(), status: resp.status(), body: bodyText });
     });
 
     const emailInput = page.locator('input[type="email"], input[placeholder*="mail" i]').first();
@@ -100,7 +100,7 @@ export async function buscarAvaliacoes({ dateFrom, dateTo }) {
       } catch { /* ignore */ }
       pageUrl = page.url();
       const err = new Error('login falhou (senha ainda visível) — confira HARMO_USER/PASS');
-      err.diagnostico = { screenshotBase64, pageText, pageUrl, loginCalls };
+      err.diagnostico = { screenshotBase64, pageText, pageUrl, loginCalls: loginCalls.slice(-40) };
       throw err;
     }
     logger.info('harmo: login OK');
