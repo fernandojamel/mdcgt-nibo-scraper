@@ -93,3 +93,30 @@ def vencimento_federal(competencia: date, dia: int) -> date:
         mes += 1
     bruto = date(ano, mes, dia)
     return dia_util_anterior_ou_igual(bruto)
+
+
+def ultimo_dia_util_do_mes(ano: int, mes: int) -> date:
+    """Último dia útil de um mês (anda pra trás a partir do último dia
+    corrido até achar um dia útil)."""
+    if mes == 12:
+        prox = date(ano + 1, 1, 1)
+    else:
+        prox = date(ano, mes + 1, 1)
+    ultimo = prox - timedelta(days=1)
+    while not eh_dia_util(ultimo):
+        ultimo -= timedelta(days=1)
+    return ultimo
+
+
+def vencimento_trimestral_federal(competencia: date) -> date:
+    """Vencimento em quota única de um tributo federal apurado por
+    trimestre (ex.: IRPJ/CSLL Lucro Presumido): último dia útil do mês
+    seguinte ao mês de FECHAMENTO do trimestre. `competencia` é o 1º dia
+    do mês de fechamento (ex.: 2026-06-01 pro trimestre abr-jun/2026 ->
+    vencimento em julho/2026)."""
+    ano, mes = competencia.year, competencia.month
+    if mes == 12:
+        ano, mes = ano + 1, 1
+    else:
+        mes += 1
+    return ultimo_dia_util_do_mes(ano, mes)
