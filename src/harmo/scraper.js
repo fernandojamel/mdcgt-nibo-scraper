@@ -59,9 +59,23 @@ export async function buscarAvaliacoes({ dateFrom, dateTo }) {
       .catch((e) => logger.warn({ err: e.message }, 'harmo: goto warn'));
     await page.waitForTimeout(1500);
 
-    // Diagnóstico: captura a resposta REAL da chamada de login (a tela só
-    // mostra "Erro inesperado" genérico) -- guarda status+corpo de qualquer
-    // POST que pareça ser de autenticação (auth0, login, token).
+    // Diagnóstico: a chamada de rede de login nunca chegou a acontecer no
+    // 1o teste -- suspeita de erro JS silencioso ANTES do fetch (algo que o
+    // Chromium headless do container não suporta e o navegador local sim).
+    // Captura console.error/console.warn e exceptions não tratadas da página.
+    const consoleMsgs = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' || msg.type() === 'warning') {
+        consoleMsgs.push({ type: msg.type(), text: msg.text().slice(0, 500) });
+      }
+    });
+    page.on('pageerror', (e) => {
+      consoleMsgs.push({ type: 'pageerror', text: String(e).slice(0, 500) });
+    });
+
+    // Captura a resposta REAL da chamada de login (a tela só mostra "Erro
+    // inesperado" genérico) -- guarda status+corpo de qualquer POST/GET
+    // relevante (filtra fora analytics/tracking conhecidos).
     const loginCalls = [];
     page.on('response', async (resp) => {
       const req2 = resp.request();
@@ -100,7 +114,11 @@ export async function buscarAvaliacoes({ dateFrom, dateTo }) {
       } catch { /* ignore */ }
       pageUrl = page.url();
       const err = new Error('login falhou (senha ainda visível) — confira HARMO_USER/PASS');
-      err.diagnostico = { screenshotBase64, pageText, pageUrl, loginCalls: loginCalls.slice(-40) };
+      err.diagnostico = {
+        screenshotBase64, pageText, pageUrl,
+        loginCalls: loginCalls.slice(-40),
+        consoleMsgs: consoleMsgs.slice(-40),
+      };
       throw err;
     }
     logger.info('harmo: login OK');
