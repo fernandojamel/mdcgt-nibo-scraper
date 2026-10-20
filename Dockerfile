@@ -18,7 +18,7 @@ RUN apt-get update \
 # ARG invalida o cache de COPYs sempre que o valor muda — garantia de que
 # mudancas em src/ ou scripts/ realmente entrem no container, mesmo se o
 # EasyPanel tiver cache estranho do Docker.
-ARG CACHE_BUST=2026-09-10-fix-cache-stale-consignado-impostos
+ARG CACHE_BUST=2026-10-20-sync-rescisoes
 RUN echo "build cache key: $CACHE_BUST"
 COPY src/ ./src/
 COPY scripts/ ./scripts/
