@@ -18,7 +18,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // Marcador de build: aparece nos logs no boot E no /health, pra confirmar QUAL
 // versão do código está rodando no container (o EasyPanel às vezes serve
 // imagem cacheada mesmo após um push+deploy).
-const BUILD = '2026-09-10-fix-cache-stale-consignado-impostos';
+const BUILD = '2026-10-20-sync-rescisoes';
 
 if (!SCRAPER_TOKEN) {
   logger.error('SCRAPER_TOKEN ausente — defina no .env antes de subir');
@@ -648,6 +648,51 @@ app.post('/sync-csll-pis-cofins-pj', (req, res) => {
   py.on('close', (code) => {
     const durationMs = Date.now() - startedAt.getTime();
     logger.info({ code, durationMs }, 'sync-csll-pis-cofins-pj finalizado');
+    res.status(code === 0 ? 200 : 500).json({
+      ok: code === 0,
+      ranAt: startedAt.toISOString(),
+      durationMs,
+      exitCode: code,
+      stdout: out.trim().split('\n').slice(-50),
+      stderr: err.trim() ? err.trim().split('\n').slice(-30) : [],
+    });
+  });
+});
+
+/**
+ * POST /sync-rescisoes
+ *
+ * Recorrência do 4º sinal de "colaborador inativo" (Quadro Colaboradores):
+ * Termos de Rescisão lançados no Nibo (Departamento Pessoal). Dispara
+ * scripts/sync_rescisoes.py. Diferente dos sync_* de imposto, não é mensal
+ * nem tem "competência completa" -- janela rolante (default 75 dias),
+ * idempotente por nibo_file_id (upsert).
+ *
+ * Pensado pra cron do n8n periódico (ex.: 2x/semana). Body (opcional):
+ *   { "dias": 30 }
+ */
+app.post('/sync-rescisoes', (req, res) => {
+  const startedAt = new Date();
+  const body = req.body ?? {};
+  const args = ['scripts/sync_rescisoes.py'];
+  if (Number.isFinite(Number(body.dias))) {
+    args.push('--dias', String(Number(body.dias)));
+  }
+
+  logger.info({ args }, 'sync-rescisoes iniciado');
+
+  const py = spawn('python3', args, { cwd: process.cwd(), env: process.env });
+  let out = '';
+  let err = '';
+  py.stdout.on('data', (d) => { out += d.toString(); });
+  py.stderr.on('data', (d) => { err += d.toString(); });
+  py.on('error', (e) => {
+    logger.error({ err: e.message }, 'sync-rescisoes falhou ao iniciar python3');
+    res.status(500).json({ ok: false, error: `spawn python3: ${e.message}` });
+  });
+  py.on('close', (code) => {
+    const durationMs = Date.now() - startedAt.getTime();
+    logger.info({ code, durationMs }, 'sync-rescisoes finalizado');
     res.status(code === 0 ? 200 : 500).json({
       ok: code === 0,
       ranAt: startedAt.toISOString(),
